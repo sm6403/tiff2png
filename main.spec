@@ -5,7 +5,7 @@ a = Analysis(
     ['src\\main.py'],
     pathex=[],
     binaries=[],
-    datas=[('src/ui/T2P.ico', 'ui')],
+    datas=[],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},
