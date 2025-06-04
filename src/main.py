@@ -399,14 +399,12 @@ class TIFFtoPNGConverter:
             os.makedirs(output_folder, exist_ok=True)
             self.logger.info(f"Created output folder: {output_folder}")
             
-            # Get all TIFF files
-            tiff_files = []
-            for ext in ('.tif', '.tiff'):
-                tiff_files.extend(Path(input_folder).glob(f'*{ext}'))
+            # Get only checked TIFF files from batch preview
+            tiff_files = self.batch_preview_frame.get_selected_files()
             
             if not tiff_files:
-                self.logger.warning("No TIFF files found in selected folder")
-                messagebox.showwarning("Warning", "No TIFF files found in selected folder")
+                self.logger.warning("No TIFF files selected for conversion")
+                messagebox.showwarning("Warning", "No TIFF files selected for conversion. Please check at least one file.")
                 return
             
             # Get settings

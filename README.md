@@ -79,4 +79,8 @@ For batch conversion:
 
 ## License
 
+<<<<<<< HEAD
 This project is licensed under the MIT License - see the LICENSE file for details. 
+=======
+This project is licensed under the MIT License - see the LICENSE file for details. 
+>>>>>>> a88316105090d43718080950ed7954af898fbe5c
