@@ -223,5 +223,10 @@ def test_batch_uses_core_with_root_naming(app, tiff, tmp_path, dialogs):
     out = tmp_path / "batch_out"
     app.output_path_var.set(str(out))
     app.convert_batch_files()
+    deadline = time.monotonic() + 10
+    while app._worker is not None and time.monotonic() < deadline:
+        app.root.update()
+        time.sleep(0.01)
+    assert app._worker is None
     assert "showerror" not in dialogs
     assert sorted(p.name for p in out.iterdir()) == ["Batch_01_01.png", "Batch_01_02.png"]

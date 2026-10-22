@@ -1,4 +1,7 @@
+import logging
 import os
+import queue
+import threading
 import tkinter as tk
 from importlib import resources
 from pathlib import Path
@@ -33,6 +36,15 @@ from tiff2png.ui.settings_frame import SettingsFrame
 THEME = "light"
 PATH_DEBOUNCE_MS = 400
 LOAD_ERRORS = (OSError, ValueError, UnidentifiedImageError)
+POLL_MS = 50
+CLOSE_JOIN_SECONDS = 10
+LOCKABLE_CLASSES = frozenset({
+    "TButton", "TEntry", "TCheckbutton", "TRadiobutton", "TCombobox", "TScale", "TSpinbox",
+    "Button", "Checkbutton", "Radiobutton", "Entry", "Scale", "Spinbox",
+})
+NAMING_CHOICES = {"Root_NN (Root Name + number)": Naming.ROOT_NN, "Keep original filenames": Naming.ORIGINAL}
+
+logger = logging.getLogger(__name__)
 
 
 def displayable(image):
@@ -77,8 +89,14 @@ class TIFFtoPNGConverter:
         self._path_job = None
         self._loaded_input = None
         self._geometry_key = None
+        self._queue = queue.Queue()
+        self._worker = None
+        self._cancel_event = None
+        self._poll_job = None
+        self._locked = {}
         self.init_components()
         self.root.bind("<Destroy>", self._on_root_destroy)
+        self.root.protocol("WM_DELETE_WINDOW", self.on_close)
 
         self.root.update_idletasks()
         min_width = self.main_frame.winfo_reqwidth() + 20
@@ -95,7 +113,7 @@ class TIFFtoPNGConverter:
         self.logger.info("Application started")
 
     def init_components(self):
-        mode_frame = ttk.LabelFrame(self.left_panel, text="Conversion Mode", padding="5")
+        mode_frame = self.mode_frame = ttk.LabelFrame(self.left_panel, text="Conversion Mode", padding="5")
         mode_frame.grid(row=0, column=0, sticky=(tk.W, tk.E), pady=5)
 
         self.mode_var = tk.StringVar(value="single")
@@ -104,7 +122,7 @@ class TIFFtoPNGConverter:
         ttk.Radiobutton(mode_frame, text="Batch Convert", variable=self.mode_var,
                         value="batch", command=self.on_mode_change).grid(row=0, column=1, padx=5)
 
-        file_frame = ttk.LabelFrame(self.left_panel, text="File Selection", padding="5")
+        file_frame = self.file_frame = ttk.LabelFrame(self.left_panel, text="File Selection", padding="5")
         file_frame.grid(row=1, column=0, sticky=(tk.W, tk.E), pady=5)
 
         ttk.Label(file_frame, text="Input:").grid(row=0, column=0, sticky=tk.W, pady=2)
@@ -132,9 +150,20 @@ class TIFFtoPNGConverter:
             command=self.on_save_to_folder_change
         )
         self.save_to_folder_cb.grid(row=0, column=0, columnspan=2, sticky=tk.W, pady=2)
-        ttk.Label(self.batch_frame, text="Root Name:").grid(row=1, column=0, sticky=tk.W, pady=2)
+        self.naming_var = tk.StringVar(value=next(iter(NAMING_CHOICES)))
+        ttk.Label(self.batch_frame, text="Naming:").grid(row=1, column=0, sticky=tk.W, pady=2)
+        self.naming_combo = ttk.Combobox(self.batch_frame, textvariable=self.naming_var,
+                                         values=list(NAMING_CHOICES), state="readonly", width=28)
+        self.naming_combo.grid(row=1, column=1, padx=5)
+        self.naming_combo.bind("<<ComboboxSelected>>", self.on_naming_change)
+        ttk.Label(self.batch_frame, text="Root Name:").grid(row=2, column=0, sticky=tk.W, pady=2)
         self.batch_root_var = tk.StringVar(value="Batch_01")
-        ttk.Entry(self.batch_frame, textvariable=self.batch_root_var, width=20).grid(row=1, column=1, padx=5)
+        self.batch_root_entry = ttk.Entry(self.batch_frame, textvariable=self.batch_root_var, width=20)
+        self.batch_root_entry.grid(row=2, column=1, padx=5, sticky=tk.W)
+        self.all_pages_var = tk.BooleanVar(value=False)
+        self.all_pages_cb = ttk.Checkbutton(self.batch_frame, text="Export all pages of multi-page files",
+                                            variable=self.all_pages_var)
+        self.all_pages_cb.grid(row=3, column=0, columnspan=2, sticky=tk.W, pady=2)
 
         self.settings_frame = SettingsFrame(self.left_panel, on_settings_change=self.on_settings_change)
         self.settings_frame.grid(row=3, column=0, sticky=(tk.W, tk.E), pady=5)
@@ -161,6 +190,10 @@ class TIFFtoPNGConverter:
                                          command=self.start_conversion)
         self.convert_button.grid(row=7, column=0, sticky=(tk.W, tk.E), pady=5)
 
+        self.cancel_button = ttk.Button(self.left_panel, text="Cancel", command=self.cancel_batch,
+                                        state=tk.DISABLED)
+        self.cancel_button.grid(row=8, column=0, sticky=(tk.W, tk.E), pady=5)
+
         self.input_path_var.trace_add('write', self.on_path_change)
         self.output_path_var.trace_add('write', self.on_path_change)
 
@@ -169,6 +202,25 @@ class TIFFtoPNGConverter:
     def _on_root_destroy(self, event):
         if event.widget is self.root:
             self._cancel_path_job()
+            self._cancel_poll()
+            if self._cancel_event is not None:
+                self._cancel_event.set()
+
+    def on_close(self):
+        if self._worker is not None:
+            self._cancel_poll()
+            self._cancel_event.set()
+            self._worker.join(CLOSE_JOIN_SECONDS)
+        self.root.destroy()
+
+    def _cancel_poll(self):
+        if self._poll_job is not None:
+            self.root.after_cancel(self._poll_job)
+            self._poll_job = None
+
+    def on_naming_change(self, event=None):
+        original = NAMING_CHOICES[self.naming_var.get()] is Naming.ORIGINAL
+        self.batch_root_entry.configure(state=tk.DISABLED if original else tk.NORMAL)
 
     def _cancel_path_job(self):
         if self._path_job is not None:
@@ -419,6 +471,8 @@ class TIFFtoPNGConverter:
         messagebox.showinfo("Success", "File converted successfully")
 
     def convert_batch_files(self):
+        if self._worker is not None:
+            return
         input_folder = self.input_path_var.get().strip()
         output_folder = self.output_path_var.get().strip()
 
@@ -437,31 +491,149 @@ class TIFFtoPNGConverter:
             messagebox.showerror("Invalid settings", self.settings_error)
             return
 
-        plan = plan_jobs(tiff_files, output_folder, Naming.ROOT_NN, self.batch_root_var.get())
-        self.logger.info(f"Starting batch conversion of {len(plan.jobs)} files")
+        plan = plan_jobs(
+            tiff_files, output_folder,
+            NAMING_CHOICES[self.naming_var.get()],
+            self.batch_root_var.get(),
+            Pages.ALL if self.all_pages_var.get() else Pages.FIRST,
+        )
+        if plan.collisions:
+            names = "\n".join(
+                ", ".join(job.src.name for job in group) + f" -> {group[0].dst.name}"
+                for group in plan.collisions)
+            self.logger.error("Output name collisions, batch not started")
+            messagebox.showerror(
+                "Output name collision",
+                f"Several files would write the same output name:\n\n{names}")
+            return
+        jobs = list(plan.jobs)
+        if plan.existing:
+            answer = messagebox.askyesnocancel(
+                "Overwrite existing files?",
+                f"{len(plan.existing)} output file(s) already exist.\n\n"
+                "Yes: overwrite them\nNo: skip them\nCancel: do not convert")
+            if answer is None:
+                self.status_var.set("Batch conversion cancelled")
+                return
+            if not answer:
+                skipped = set(plan.existing)
+                jobs = [job for job in jobs if job not in skipped]
+                if not jobs:
+                    self.status_var.set("Nothing to convert, all outputs exist")
+                    return
+        self.logger.info(f"Starting batch conversion of {len(jobs)} files")
         self.logger.debug(f"Conversion settings: {settings}")
+        self._start_batch_worker(jobs, settings)
+
+    def _start_batch_worker(self, jobs, settings):
         self.status_var.set("Converting...")
         self.progress_var.set(0)
+        self._set_running(True)
+        self._cancel_event = threading.Event()
+        crop_box = crop_size = None
+        if self.proxy is not None:
+            crop_box = self._effective_box(settings)
+            crop_size = self.proxy.source_size
+        self._worker = threading.Thread(
+            target=self._worker_main,
+            args=(jobs, settings, self._cancel_event, crop_box, crop_size),
+            name="batch-convert", daemon=True)
+        self._worker.start()
+        self._poll_job = self.root.after(POLL_MS, self._drain_queue)
 
+    def _worker_main(self, jobs, settings, cancel_event, crop_box, crop_size):
+        """Runs off the main thread: reports only through the queue, never touches Tk."""
         def on_progress(finished, total, job):
-            self.progress_var.set(finished / total * 100)
-            self.status_var.set(f"Converting... ({finished}/{total})")
-            self.root.update_idletasks()
+            self._queue.put(("progress", finished, total, job))
 
-        report = run_jobs(plan.jobs, settings, progress_cb=on_progress)
+        try:
+            report = run_jobs(jobs, settings, on_progress, cancel_event, crop_box, crop_size)
+        except Exception as error:
+            logger.exception("Batch worker crashed")
+            self._queue.put(("crashed", error))
+        else:
+            self._queue.put(("done", report))
+
+    def _drain_queue(self):
+        self._poll_job = None
+        finished_message = None
+        while True:
+            try:
+                message = self._queue.get_nowait()
+            except queue.Empty:
+                break
+            if message[0] == "progress":
+                _kind, finished, total, job = message
+                self.progress_var.set(finished / total * 100)
+                if not self._cancel_event.is_set():
+                    self.status_var.set(f"Converting... ({finished}/{total}) {job.src.name}")
+            else:
+                finished_message = message
+        if finished_message is None:
+            self._poll_job = self.root.after(POLL_MS, self._drain_queue)
+            return
+        self._worker.join()
+        self._worker = None
+        self._cancel_event = None
+        self._set_running(False)
+        if finished_message[0] == "crashed":
+            error = finished_message[1]
+            self.status_var.set("Batch conversion failed")
+            messagebox.showerror("Error", f"Batch conversion failed: {type(error).__name__}: {error}")
+            return
+        self._show_batch_result(finished_message[1])
+
+    def _show_batch_result(self, report):
         successful = len(report.done)
         failed = len(report.failed)
-        if failed == 0:
+        if report.cancelled:
+            self.status_var.set(f"Cancelled ({successful} converted, {failed} failed)")
+            self.logger.warning(f"Batch cancelled: {successful} converted, {failed} failed")
+        else:
+            self.status_var.set("Batch conversion complete")
+            self.progress_var.set(100)
+        if failed:
+            self.logger.warning(f"Batch finished with {failed} failures: {successful} files converted")
+            details = "\n".join(
+                f"{item.job.src.name} (page {item.job.page + 1}): {item.message}"
+                for item in report.failed)
+            messagebox.showwarning(
+                "Conversion summary",
+                f"{failed} file(s) failed, {successful} converted"
+                f"{' before cancelling' if report.cancelled else ''}\n\n{details}")
+        elif not report.cancelled:
             self.logger.info(f"Batch conversion completed successfully: {successful} files converted")
             messagebox.showinfo("Success", f"Successfully converted {successful} files")
+
+    def cancel_batch(self):
+        if self._cancel_event is not None and not self._cancel_event.is_set():
+            self._cancel_event.set()
+            self.cancel_button.configure(state=tk.DISABLED)
+            self.status_var.set("Cancelling...")
+            self.logger.info("Batch cancel requested")
+
+    def _lockable_widgets(self):
+        stack = [self.mode_frame, self.file_frame, self.batch_frame,
+                 self.settings_frame.basic_tab, self.settings_frame.advanced_tab,
+                 self.batch_preview_frame, self.convert_button]
+        while stack:
+            widget = stack.pop()
+            if widget.winfo_class() in LOCKABLE_CLASSES:
+                yield widget
+            stack.extend(widget.winfo_children())
+
+    def _set_running(self, running):
+        if running:
+            for widget in self._lockable_widgets():
+                self._locked[widget] = str(widget.cget("state"))
+                widget.configure(state=tk.DISABLED)
+            self.cancel_button.configure(state=tk.NORMAL)
         else:
-            self.logger.warning(f"Batch conversion completed with {failed} failures: {successful} files converted")
-            details = "\n".join(f"{item.job.src.name}: {item.message}" for item in report.failed)
-            messagebox.showwarning(
-                "Warning",
-                f"Conversion complete with {failed} failures\n"
-                f"Successfully converted {successful} files\n\n{details}")
-        self.status_var.set("Batch conversion complete")
+            for widget, state in self._locked.items():
+                if widget.winfo_exists():
+                    widget.configure(state=state)
+            self._locked = {}
+            self.cancel_button.configure(state=tk.DISABLED)
 
     def on_save_to_folder_change(self):
         input_path = self.input_path_var.get()
