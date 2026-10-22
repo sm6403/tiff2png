@@ -47,7 +47,7 @@ def count_pages(path: Path) -> int:
     try:
         with Image.open(path) as source:
             return getattr(source, "n_frames", 1)
-    except OSError:
+    except (OSError, Image.DecompressionBombError):
         return 1
 
 
@@ -57,6 +57,7 @@ def plan_jobs(
     naming: Naming = Naming.ROOT_NN,
     root: str = DEFAULT_ROOT,
     pages: Pages = Pages.FIRST,
+    dst_file: str | os.PathLike | None = None,
 ) -> Plan:
     out_dir = Path(out)
     jobs: list[Job] = []
@@ -67,6 +68,10 @@ def plan_jobs(
         for page in range(page_count):
             suffix = f"_p{page + 1:02d}" if page_count > 1 else ""
             jobs.append(Job(src, page, out_dir / f"{base}{suffix}.png"))
+    if dst_file is not None:
+        if len(jobs) != 1:
+            raise ValueError("A single output file needs exactly one page to convert")
+        jobs[0] = Job(jobs[0].src, jobs[0].page, Path(dst_file))
     by_name: dict[str, list[Job]] = defaultdict(list)
     for job in jobs:
         by_name[job.dst.name.lower()].append(job)

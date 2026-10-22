@@ -12,6 +12,8 @@ from tiff2png.core.geometry import Geometry
 from tiff2png.core.settings import ColourMode, ConvertSettings, Dither, Pages, Resample
 
 PROXY_MAX_SIDE = 1024
+MAX_MEGAPIXELS = 1000
+THUMBNAIL_RESAMPLE = Image.Resampling.LANCZOS
 KEEP_MODES = frozenset({"1", "L", "LA", "P", "RGB", "RGBA", "I;16"})
 SIXTEEN_BIT_MODES = frozenset({"I;16", "I;16B", "I;16L", "I;16N"})
 GRAY_PROFILE_MODES = frozenset({"1", "L", "LA", "I;16"})
@@ -27,10 +29,19 @@ class PageMeta:
     dpi: tuple[float, float] | None = None
 
 
+def _open(path: str | os.PathLike) -> Image.Image:
+    try:
+        return Image.open(path)
+    except Image.DecompressionBombError:
+        raise ValueError(
+            f"Image is larger than the {MAX_MEGAPIXELS} megapixel limit"
+        ) from None
+
+
 def load_pages(
     path: str | os.PathLike, pages: Pages
 ) -> Iterator[tuple[int, Image.Image, PageMeta]]:
-    with Image.open(path) as source:
+    with _open(path) as source:
         frame_count = getattr(source, "n_frames", 1)
         indices = range(frame_count) if pages is Pages.ALL else range(1)
         for index in indices:
@@ -62,6 +73,23 @@ def make_proxy(image: Image.Image, max_side: int = PROXY_MAX_SIDE) -> Proxy:
     prepared = _prepare_for_resize(image, Resample.LANCZOS)
     resized = prepared.resize(size, Resample.LANCZOS.value)
     return Proxy(resized, source_size, max(size) / long_side)
+
+
+def displayable(image: Image.Image) -> Image.Image:
+    """Return image in a mode Tk can show."""
+    if image.mode in ("L", "RGB", "RGBA"):
+        return image
+    if image.mode == "I;16":
+        return _to_8_bit(image)
+    return image.convert("RGBA")
+
+
+def load_thumbnail(path: str | os.PathLike, max_size: tuple[int, int]) -> Image.Image:
+    with _open(path) as source:
+        source.load()
+        image, _profile = normalise(source)
+        image.thumbnail(max_size, THUMBNAIL_RESAMPLE)
+        return displayable(image)
 
 
 def _read_dpi(source: Image.Image) -> tuple[float, float] | None:
@@ -136,12 +164,22 @@ def _prepare_for_resize(image: Image.Image, resample: Resample) -> Image.Image:
 
 def _to_8_bit(image: Image.Image) -> Image.Image:
     if image.mode == "I;16":
-        return image.point(lambda value: value / 256, "L")
+        reduced = image.point(lambda value: value / 256, "L")
+        return reduced if reduced.mode == "L" else reduced.convert("L")
     return image
 
 
+def _is_identity(image: Image.Image, geometry: Geometry) -> bool:
+    return geometry.out_size == image.size and geometry.box.as_tuple() == (
+        0.0, 0.0, float(image.width), float(image.height)
+    )
+
+
 def render(image: Image.Image, geometry: Geometry, settings: ConvertSettings) -> Image.Image:
-    prepared = _prepare_for_resize(image, settings.resample)
+    if _is_identity(image, geometry):
+        prepared = image
+    else:
+        prepared = _prepare_for_resize(image, settings.resample)
     resized = prepared.resize(
         geometry.out_size, settings.resample.value, box=geometry.box.as_tuple()
     )

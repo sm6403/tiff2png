@@ -25,6 +25,7 @@ FIT_LABEL = "Fit within (keep aspect, never upscale)"
 FILL_LABEL = "Fill (crop to exact size)"
 FIT_CHOICES = {FIT_LABEL: Fit.FIT, FILL_LABEL: Fit.FILL}
 DEFAULT_COMPRESS_LEVEL = 9
+OPTIMIZE_COMPRESS_LEVEL = 9
 LOG_TIME_FORMAT = "%Y-%m-%d %H:%M:%S"
 
 
@@ -103,6 +104,7 @@ class SettingsFrame(ttk.Frame):
         self.dither_var = tk.StringVar(value=Dither.FLOYDSTEINBERG.name)
         self.filter_var = tk.StringVar(value=Resample.LANCZOS.name)
         self.compress_level_var = tk.StringVar(value=str(DEFAULT_COMPRESS_LEVEL))
+        self._level_before_optimize = str(DEFAULT_COMPRESS_LEVEL)
         self.manual_width_var = tk.StringVar(value="")
         self.manual_height_var = tk.StringVar(value="")
 
@@ -179,7 +181,7 @@ class SettingsFrame(ttk.Frame):
         optimize_check = ttk.Checkbutton(
             self.basic_tab,
             text="Optimize PNG (Reduces file size by analyzing and optimizing the image data)",
-            variable=self.optimize_var, command=self.notify_change)
+            variable=self.optimize_var, command=self.on_optimize_toggle)
         optimize_check.grid(row=2, column=0, columnspan=3, sticky=tk.W, pady=5)
 
         Tooltip(resolution_combo,
@@ -189,6 +191,20 @@ class SettingsFrame(ttk.Frame):
         Tooltip(optimize_check,
                 "When enabled, the encoder tries several filters for the smallest\n"
                 "PNG. Slower to save, with no quality loss.")
+
+    def on_optimize_toggle(self):
+        self._sync_compress_level()
+        self.notify_change()
+
+    def _sync_compress_level(self):
+        if self.optimize_var.get():
+            if str(self.compress_spin.cget("state")) != "disabled":
+                self._level_before_optimize = self.compress_level_var.get()
+            self.compress_level_var.set(str(OPTIMIZE_COMPRESS_LEVEL))
+            self.compress_spin.configure(state="disabled")
+        else:
+            self.compress_level_var.set(self._level_before_optimize)
+            self.compress_spin.configure(state="normal")
 
     def on_resolution_selected(self, event=None):
         resolution = self.standard_resolutions.get(self.resolution_var.get())
@@ -232,6 +248,8 @@ class SettingsFrame(ttk.Frame):
         compress_spin.grid(row=1, column=1, sticky=tk.W, padx=5, pady=2)
         compress_spin.bind('<Return>', self.notify_change)
         compress_spin.bind('<FocusOut>', self.notify_change)
+        self.compress_spin = compress_spin
+        self._sync_compress_level()
 
         manual_res_frame = ttk.LabelFrame(self.advanced_tab, text="Manual Output Resolution", padding="5")
         manual_res_frame.grid(row=3, column=0, columnspan=2, sticky=(tk.W, tk.E), pady=10)
@@ -292,7 +310,9 @@ class SettingsFrame(ttk.Frame):
         self.color_mode_var.set(COLOUR_CHOICES[0])
         self.dither_var.set(Dither.FLOYDSTEINBERG.name)
         self.filter_var.set(Resample.LANCZOS.name)
-        self.compress_level_var.set(str(DEFAULT_COMPRESS_LEVEL))
+        self._level_before_optimize = str(DEFAULT_COMPRESS_LEVEL)
+        if not self.optimize_var.get():
+            self.compress_level_var.set(self._level_before_optimize)
         self.fit_var.set(FIT_LABEL)
         self.manual_width_var.set("")
         self.manual_height_var.set("")

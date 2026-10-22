@@ -51,8 +51,17 @@ tiff2png INPUT... [-o OUT] [--scale PCT] [--fit WxH | --fill WxH] [--crop L,T,R,
          [--naming root|original] [--root NAME] [--overwrite]
 ```
 
-INPUT is any mix of TIFF files and folders. `-o` defaults to the first input's folder.
-`--root` defaults to `Batch`. `--crop` applies to every page, clamped per page.
+INPUT is one or more TIFF files, or a single folder (files and folders cannot be mixed).
+`-o` is an output folder and defaults to the first input's folder. With a single file input,
+`-o name.png` writes exactly that file (missing parent folders are created), and without
+`--naming` the output is `<stem>.png`. Folders and several files default to `<root>_NN.png`
+(`--root`, default `Batch`). `--crop` applies to every page, clamped per page.
+
+Optimize always compresses at level 9, so an explicit `--compress-level N` turns optimize off
+and uses level N. In the GUI the Compression Level box is disabled and shows 9 while Optimize
+PNG is ticked.
+
+TIFFs up to 1,000 megapixels are accepted; larger files fail with a clear error.
 
 Exit codes: 0 all converted, 1 some failed, 2 usage or plan error (including name collisions
 and existing outputs without `--overwrite`).

@@ -250,7 +250,7 @@ def test_batch_passes_crop_box_with_source_size(app, tiff, tmp_path, dialogs, mo
     assert captured["size"] == app.proxy.source_size
 
 
-def test_closing_during_run_cancels_and_joins_worker(app, tiff, tmp_path, dialogs, monkeypatch):
+def start_blocked_batch(app, tiff, tmp_path, monkeypatch):
     real_render = runner_module.render
     started = threading.Event()
     release = threading.Event()
@@ -261,25 +261,73 @@ def test_closing_during_run_cancels_and_joins_worker(app, tiff, tmp_path, dialog
         return real_render(*args, **kwargs)
 
     monkeypatch.setattr(runner_module, "render", blocking_render)
-    open_batch(app, make_batch(tmp_path, tiff, corrupt=False), tmp_path / "out")
+    out = tmp_path / "out"
+    open_batch(app, make_batch(tmp_path, tiff, corrupt=False), out)
     app.start_conversion()
     pump_until(app, started.is_set)
-    worker = app._worker
-    seen = {}
+    return out, release
 
+
+def test_closing_during_run_cancels_without_blocking_and_destroys_when_job_ends(
+    app, tiff, tmp_path, dialogs, monkeypatch
+):
+    out, release = start_blocked_batch(app, tiff, tmp_path, monkeypatch)
+    cancel = app._cancel_event
+    destroyed = threading.Event()
     real_destroy = app.root.destroy
 
     def destroy():
-        if seen:
+        if destroyed.is_set():
             return
-        seen["worker_alive"] = worker.is_alive()
-        seen["cancelled"] = worker_cancel.is_set()
+        destroyed.set()
         real_destroy()
 
-    worker_cancel = app._cancel_event
     monkeypatch.setattr(app.root, "destroy", destroy)
-    threading.Timer(0.2, release.set).start()
-
+    start = time.monotonic()
     app.on_close()
+    assert time.monotonic() - start < 0.5
+    assert cancel.is_set()
+    assert app.status_var.get() == "Cancelling..."
+    assert not destroyed.is_set()
 
-    assert seen == {"worker_alive": False, "cancelled": True}
+    longest = 0.0
+    for _ in range(10):
+        tick = time.monotonic()
+        app.root.update()
+        longest = max(longest, time.monotonic() - tick)
+        time.sleep(0.02)
+    assert longest < 0.5
+    assert not destroyed.is_set()
+
+    release.set()
+    pump_until(app, destroyed.is_set)
+    assert not list(out.glob("*.tmp"))
+    assert dialogs == {}
+
+
+def test_closing_with_no_run_destroys_immediately(app, monkeypatch):
+    destroyed = []
+    real_destroy = app.root.destroy
+    monkeypatch.setattr(app.root, "destroy", lambda: destroyed.append(True))
+    app.on_close()
+    assert destroyed == [True]
+    real_destroy()
+
+
+def test_batch_thumbnails_render_for_sixteen_bit_and_lab(app, tiff, tmp_path):
+    folder = tmp_path / "thumbs"
+    folder.mkdir()
+    for name in ("i16", "lab", "f_unit"):
+        shutil.copy(tiff(name), folder / f"{name}.tif")
+    open_batch(app, folder, tmp_path / "out")
+    frame = app.batch_preview_frame
+    assert len(frame.preview_images) == 3
+    texts = [
+        label.cget("text")
+        for holder in frame.grid_frame.winfo_children()
+        for canvas in holder.winfo_children()
+        if canvas.winfo_class() == "Canvas"
+        for label in canvas.winfo_children()
+        if label.winfo_class() == "TLabel"
+    ]
+    assert not any("Error loading preview" in text for text in texts)

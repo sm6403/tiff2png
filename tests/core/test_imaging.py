@@ -4,6 +4,7 @@ from pathlib import Path
 import pytest
 from PIL import Image, ImageCms
 
+import tiff2png
 from conftest import FIXTURES, QUADRANT_COLOURS
 from tiff2png.core.geometry import Box, compute_geometry
 from tiff2png.core.imaging import (
@@ -11,6 +12,7 @@ from tiff2png.core.imaging import (
     estimate_png_size,
     format_size,
     load_pages,
+    load_thumbnail,
     make_proxy,
     render,
     save_png,
@@ -385,3 +387,57 @@ def test_make_proxy_handles_modes(mode):
     image = Image.new(mode, (300, 200))
     proxy = make_proxy(image, max_side=100)
     assert max(proxy.image.size) == 100
+
+
+def png_mode(tiff, name, tmp_path, settings=None, box=None):
+    _, image, _meta = first_page(tiff(name))
+    settings = settings or ConvertSettings()
+    geometry = compute_geometry(image.size, settings, box)
+    dst = tmp_path / f"{name}.png"
+    save_png(render(image, geometry, settings), dst, settings)
+    with Image.open(dst) as saved:
+        return saved.mode
+
+
+def test_auto_keeps_palette_and_one_bit_at_identity(tiff, tmp_path):
+    assert png_mode(tiff, "p", tmp_path) == "P"
+    assert png_mode(tiff, "one", tmp_path) == "1"
+
+
+def test_auto_keeps_palette_and_one_bit_with_nearest(tiff, tmp_path):
+    settings = ConvertSettings(scale=0.5, resample=Resample.NEAREST)
+    assert png_mode(tiff, "p", tmp_path, settings) == "P"
+    assert png_mode(tiff, "one", tmp_path, settings) == "1"
+
+
+def test_auto_still_converts_palette_and_one_bit_when_resampling(tiff, tmp_path):
+    settings = ConvertSettings(scale=0.5)
+    assert png_mode(tiff, "p", tmp_path, settings) == "RGB"
+    assert png_mode(tiff, "one", tmp_path, settings) == "L"
+
+
+def test_palette_identity_pixels_are_unchanged(tiff, tmp_path):
+    _, image, _meta = first_page(tiff("p"))
+    source = image.convert("RGB")
+    dst = tmp_path / "p.png"
+    settings = ConvertSettings()
+    save_png(render(image, compute_geometry(image.size, settings, None), settings), dst, settings)
+    with Image.open(dst) as saved:
+        assert saved.convert("RGB").tobytes() == source.tobytes()
+
+
+@pytest.mark.parametrize("name", ["i16", "lab", "f_unit", "cmyk", "p", "one"])
+def test_thumbnails_render_for_every_mode(tiff, name):
+    thumb = load_thumbnail(tiff(name), (32, 24))
+    assert thumb.mode in ("L", "RGB", "RGBA")
+    assert thumb.width <= 32 and thumb.height <= 24
+
+
+def test_image_over_the_limit_gives_a_clear_error(tiff, monkeypatch):
+    monkeypatch.setattr(Image, "MAX_IMAGE_PIXELS", 100)
+    with pytest.raises(ValueError, match="megapixel limit"):
+        first_page(tiff("rgb"))
+
+
+def test_package_raises_pillow_limit_to_a_thousand_megapixels():
+    assert tiff2png.MAX_IMAGE_PIXELS * 2 == 1_000_000_000

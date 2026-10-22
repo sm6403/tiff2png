@@ -2,6 +2,7 @@ import threading
 
 from PIL import Image
 
+from tiff2png.core import runner as runner_module
 from tiff2png.core.geometry import Box
 from tiff2png.core.jobs import Naming, plan_jobs
 from tiff2png.core.runner import run_jobs
@@ -58,3 +59,21 @@ def test_crop_box_only_applies_to_matching_size(tiff, tmp_path):
     with Image.open(tmp_path / "out" / "quadrants.png") as image:
         matched = image.convert("RGB").getpixel((1, 1))
     assert mismatched != matched
+
+
+def test_cancel_between_render_and_save_skips_the_save(tiff, tmp_path, monkeypatch):
+    out = tmp_path / "out"
+    plan = plan_jobs([tiff("rgb")], out, Naming.ORIGINAL)
+    cancel = threading.Event()
+    real_render = runner_module.render
+
+    def render_then_cancel(*args, **kwargs):
+        result = real_render(*args, **kwargs)
+        cancel.set()
+        return result
+
+    monkeypatch.setattr(runner_module, "render", render_then_cancel)
+    report = run_jobs(plan.jobs, ConvertSettings(), cancel_event=cancel)
+    assert report.cancelled
+    assert report.done == [] and report.failed == []
+    assert not out.exists() or list(out.iterdir()) == []

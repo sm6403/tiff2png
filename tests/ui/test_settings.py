@@ -230,3 +230,28 @@ def test_batch_uses_core_with_root_naming(app, tiff, tmp_path, dialogs):
     assert app._worker is None
     assert "showerror" not in dialogs
     assert sorted(p.name for p in out.iterdir()) == ["Batch_01_01.png", "Batch_01_02.png"]
+
+
+def test_compress_spinbox_is_disabled_at_nine_while_optimize_is_ticked(app):
+    frame = app.settings_frame
+    assert frame.optimize_var.get()
+    assert str(frame.compress_spin.cget("state")) == "disabled"
+    assert frame.compress_level_var.get() == "9"
+    assert app.current_settings().compress_level == 9
+
+
+def test_unticking_optimize_restores_previous_level(app):
+    frame = app.settings_frame
+    frame.optimize_var.set(False)
+    frame.on_optimize_toggle()
+    assert str(frame.compress_spin.cget("state")) == "normal"
+    frame.compress_level_var.set("3")
+    frame.optimize_var.set(True)
+    frame.on_optimize_toggle()
+    assert frame.compress_level_var.get() == "9"
+    assert str(frame.compress_spin.cget("state")) == "disabled"
+    frame.optimize_var.set(False)
+    frame.on_optimize_toggle()
+    assert frame.compress_level_var.get() == "3"
+    assert str(frame.compress_spin.cget("state")) == "normal"
+    assert app.current_settings().compress_level == 3

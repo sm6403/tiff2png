@@ -20,6 +20,7 @@ EXIT_OK = 0
 EXIT_FAILED = 1
 EXIT_USAGE = 2
 
+DEFAULT_COMPRESS_LEVEL = 9
 DITHER_NAMES = {"none": Dither.NONE, "fs": Dither.FLOYDSTEINBERG}
 
 
@@ -48,12 +49,19 @@ def _crop(text: str) -> Box:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="tiff2png",
-        description="Convert TIFF images to PNG. INPUT is one or more files, or a single folder.",
+        description=(
+            "Convert TIFF images to PNG. INPUT is one or more files, or a single folder. "
+            "A single file is written as <stem>.png; folders and several files are "
+            "written as <root>_NN.png."
+        ),
     )
     parser.add_argument("inputs", nargs="+", metavar="INPUT")
     parser.add_argument(
         "-o", "--output", metavar="OUT",
-        help="output folder (default: the folder of the first input)",
+        help=(
+            "output folder (default: the folder of the first input); with a single file "
+            "input, a name ending in .png is written as exactly that file"
+        ),
     )
     parser.add_argument(
         "--scale", type=float, default=100.0, metavar="PCT",
@@ -81,13 +89,20 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--no-optimize", action="store_true", help="skip PNG optimisation")
     parser.add_argument(
-        "--compress-level", type=int, default=9, metavar="N",
-        help="PNG compression level 0 to 9 (default 9)",
+        "--compress-level", type=int, default=None, metavar="N",
+        help=(
+            "PNG compression level 0 to 9; setting it turns optimisation off, because "
+            "optimisation always uses level 9 (default: optimise, level 9)"
+        ),
     )
     parser.add_argument("--all-pages", action="store_true", help="export every page of multi-page TIFFs")
     parser.add_argument(
-        "--naming", default=Naming.ROOT_NN.value, choices=[member.value for member in Naming],
-        type=str.lower, help="root: <root>_NN.png, original: <stem>.png (default root)",
+        "--naming", default=None, choices=[member.value for member in Naming],
+        type=str.lower,
+        help=(
+            "root: <root>_NN.png, original: <stem>.png "
+            "(default: original for a single file, root for folders and several files)"
+        ),
     )
     parser.add_argument("--root", default=DEFAULT_ROOT, metavar="NAME", help="root name for --naming root")
     parser.add_argument("--overwrite", action="store_true", help="replace existing output files")
@@ -107,8 +122,8 @@ def _settings(args: argparse.Namespace) -> ConvertSettings:
             resample=Resample[args.resample.upper()],
             colour=ColourMode(args.colour),
             dither=DITHER_NAMES[args.dither],
-            optimize=not args.no_optimize,
-            compress_level=args.compress_level,
+            optimize=not args.no_optimize and args.compress_level is None,
+            compress_level=DEFAULT_COMPRESS_LEVEL if args.compress_level is None else args.compress_level,
             pages=Pages.ALL if args.all_pages else Pages.FIRST,
         )
     except ValueError as error:
@@ -134,8 +149,20 @@ def _resolve_inputs(raw: Sequence[str]) -> list[Path]:
 def _run(args: argparse.Namespace) -> int:
     settings = _settings(args)
     inputs = _resolve_inputs(args.inputs)
+    single_file = len(args.inputs) == 1 and not Path(args.inputs[0]).is_dir()
+    if args.naming is not None:
+        naming = Naming(args.naming)
+    else:
+        naming = Naming.ORIGINAL if single_file else Naming.ROOT_NN
     out_dir = Path(args.output) if args.output else inputs[0].parent
-    plan = plan_jobs(inputs, out_dir, Naming(args.naming), args.root, settings.pages)
+    dst_file = None
+    if single_file and args.output and out_dir.suffix.lower() == ".png" and not out_dir.is_dir():
+        dst_file = out_dir
+        out_dir = dst_file.parent
+    try:
+        plan = plan_jobs(inputs, out_dir, naming, args.root, settings.pages, dst_file)
+    except ValueError as error:
+        raise UsageError(str(error)) from None
     if plan.collisions:
         names = ", ".join(sorted({group[0].dst.name for group in plan.collisions}))
         raise UsageError(f"output names collide: {names}")
@@ -157,6 +184,7 @@ def _run(args: argparse.Namespace) -> int:
 
 def main(argv: Sequence[str] | None = None) -> int:
     logging.basicConfig(level=logging.CRITICAL)
+    logging.captureWarnings(True)
     args = build_parser().parse_args(argv)
     try:
         return _run(args)

@@ -1,6 +1,8 @@
 import tkinter as tk
 from tkinter import ttk
-from PIL import Image, ImageTk
+from PIL import ImageTk
+
+from tiff2png.core.imaging import load_thumbnail
 
 class BatchPreviewFrame(ttk.Frame):
     def __init__(self, parent, *args, **kwargs):
@@ -101,18 +103,14 @@ class BatchPreviewFrame(ttk.Frame):
             filename_label = ttk.Label(preview_frame, text=tiff_file.name, wraplength=preview_width)
             filename_label.grid(row=1, column=0, pady=(2, 0))
             try:
-                # Load and resize image for preview
-                with Image.open(tiff_file) as img:
-                    # Fit image inside preview box, maintaining aspect ratio
-                    img.thumbnail((preview_width, preview_height), Image.Resampling.LANCZOS)
-                    # Center image in the canvas
-                    img_w, img_h = img.size
-                    x = (preview_width - img_w) // 2
-                    y = (preview_height - img_h) // 2
-                    photo = ImageTk.PhotoImage(img)
-                    self.preview_images.append(photo)  # Keep reference
-                    preview_label.configure(image=photo)
-                    canvas.coords(canvas.create_window(x, y, anchor=tk.NW, window=preview_label), x, y)
+                img = load_thumbnail(tiff_file, (preview_width, preview_height))
+                img_w, img_h = img.size
+                x = (preview_width - img_w) // 2
+                y = (preview_height - img_h) // 2
+                photo = ImageTk.PhotoImage(img)
+                self.preview_images.append(photo)  # Keep reference
+                preview_label.configure(image=photo)
+                canvas.coords(canvas.create_window(x, y, anchor=tk.NW, window=preview_label), x, y)
             except (OSError, ValueError) as e:
                 preview_label.configure(text=f"Error loading preview:\n{str(e)}")
 

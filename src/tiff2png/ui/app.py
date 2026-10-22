@@ -19,6 +19,7 @@ from tiff2png.core.geometry import (
 )
 from tiff2png.core.imaging import (
     PROXY_MAX_SIDE,
+    displayable,
     estimate_png_size,
     format_size,
     load_pages,
@@ -37,7 +38,6 @@ THEME = "light"
 PATH_DEBOUNCE_MS = 400
 LOAD_ERRORS = (OSError, ValueError, UnidentifiedImageError)
 POLL_MS = 50
-CLOSE_JOIN_SECONDS = 10
 LOCKABLE_CLASSES = frozenset({
     "TButton", "TEntry", "TCheckbutton", "TRadiobutton", "TCombobox", "TScale", "TSpinbox",
     "Button", "Checkbutton", "Radiobutton", "Entry", "Scale", "Spinbox",
@@ -45,15 +45,6 @@ LOCKABLE_CLASSES = frozenset({
 NAMING_CHOICES = {"Root_NN (Root Name + number)": Naming.ROOT_NN, "Keep original filenames": Naming.ORIGINAL}
 
 logger = logging.getLogger(__name__)
-
-
-def displayable(image):
-    """Return a copy of image in a mode Tk can show."""
-    if image.mode in ("L", "RGB", "RGBA"):
-        return image
-    if image.mode == "I;16":
-        return image.point(lambda value: value / 256, "L")
-    return image.convert("RGBA")
 
 
 class TIFFtoPNGConverter:
@@ -92,6 +83,7 @@ class TIFFtoPNGConverter:
         self._queue = queue.Queue()
         self._worker = None
         self._cancel_event = None
+        self._closing = False
         self._poll_job = None
         self._locked = {}
         self.init_components()
@@ -207,11 +199,13 @@ class TIFFtoPNGConverter:
                 self._cancel_event.set()
 
     def on_close(self):
-        if self._worker is not None:
-            self._cancel_poll()
-            self._cancel_event.set()
-            self._worker.join(CLOSE_JOIN_SECONDS)
-        self.root.destroy()
+        if self._worker is None:
+            self.root.destroy()
+            return
+        self._closing = True
+        self._cancel_event.set()
+        self.cancel_button.configure(state=tk.DISABLED)
+        self.status_var.set("Cancelling...")
 
     def _cancel_poll(self):
         if self._poll_job is not None:
@@ -575,6 +569,9 @@ class TIFFtoPNGConverter:
         self._worker.join()
         self._worker = None
         self._cancel_event = None
+        if self._closing:
+            self.root.destroy()
+            return
         self._set_running(False)
         if finished_message[0] == "crashed":
             error = finished_message[1]
@@ -659,6 +656,7 @@ class TIFFtoPNGConverter:
 
 
 def main():
+    logging.captureWarnings(True)
     app = TIFFtoPNGConverter()
     app.run()
 

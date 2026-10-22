@@ -87,6 +87,8 @@ def run_jobs(
                         box = None
                     geometry = compute_geometry(image.size, settings, box)
                     output = render(image, geometry, settings)
+                    if cancelled():
+                        break
                     job.dst.parent.mkdir(parents=True, exist_ok=True)
                     save_png(output, job.dst, settings, meta)
                 except Exception as error:
