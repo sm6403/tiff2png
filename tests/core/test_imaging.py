@@ -11,6 +11,7 @@ from tiff2png.core.imaging import (
     estimate_png_size,
     format_size,
     load_pages,
+    make_proxy,
     render,
     save_png,
 )
@@ -364,3 +365,23 @@ def test_estimate_scales_with_output_size(noise_image):
 )
 def test_format_size(size, text):
     assert format_size(size) == text
+
+
+def test_make_proxy_downscales_long_side_and_records_factor():
+    proxy = make_proxy(Image.new("RGB", (4000, 1000)), max_side=1000)
+    assert proxy.image.size == (1000, 250)
+    assert proxy.source_size == (4000, 1000)
+    assert proxy.factor == pytest.approx(0.25)
+
+
+def test_make_proxy_keeps_small_image_unchanged():
+    image = Image.new("RGB", (64, 48))
+    proxy = make_proxy(image)
+    assert proxy.image is image and proxy.factor == 1.0
+
+
+@pytest.mark.parametrize("mode", ["P", "1", "I;16", "L", "RGBA"])
+def test_make_proxy_handles_modes(mode):
+    image = Image.new(mode, (300, 200))
+    proxy = make_proxy(image, max_side=100)
+    assert max(proxy.image.size) == 100

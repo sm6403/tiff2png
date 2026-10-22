@@ -7,8 +7,21 @@ from tkinter import ttk, filedialog, messagebox
 import sv_ttk
 from PIL import UnidentifiedImageError
 
-from tiff2png.core.geometry import Box, clamp_box, compute_geometry, default_fill_box
-from tiff2png.core.imaging import estimate_png_size, format_size, load_pages, render
+from tiff2png.core.geometry import (
+    Box,
+    clamp_box,
+    compute_geometry,
+    default_fill_box,
+    preview_geometry,
+)
+from tiff2png.core.imaging import (
+    PROXY_MAX_SIDE,
+    estimate_png_size,
+    format_size,
+    load_pages,
+    make_proxy,
+    render,
+)
 from tiff2png.core.jobs import Job, Naming, find_tiffs, plan_jobs
 from tiff2png.core.runner import run_jobs
 from tiff2png.core.settings import Fit, Pages
@@ -56,7 +69,7 @@ class TIFFtoPNGConverter:
         self.right_panel.grid_rowconfigure(0, weight=1)
 
         self.source_path = None
-        self.source_image = None
+        self.proxy = None
         self.source_meta = None
         self.source_file_size = 0
         self.crop_box = None
@@ -241,26 +254,29 @@ class TIFFtoPNGConverter:
     def clear_source(self):
         self._loaded_input = None
         self.source_path = None
-        self.source_image = None
+        self.proxy = None
         self.source_meta = None
         self.crop_box = None
         self.info_frame.update_input_info(None, None, None)
         self.info_frame.update_output_info(None, None, None, None)
-        self.preview_frame.update_input_preview(None)
+        self.preview_frame.clear_input()
         self.preview_frame.update_output_preview(None)
 
     def _set_source(self, path):
-        """Load page 0 of path as the cached preview source."""
-        self.source_file_size = os.path.getsize(path)
+        """Load page 0 of path once and keep only a downscaled proxy for previews."""
+        file_size = os.path.getsize(path)
         for _index, image, meta in load_pages(path, Pages.FIRST):
-            self.source_image = image
-            self.source_meta = meta
+            proxy = make_proxy(image)
+        self.proxy = proxy
+        self.source_meta = meta
+        self.source_file_size = file_size
         self.source_path = Path(path)
         self.crop_box = None
-        self.settings_frame.set_input_image_size(self.source_image.size)
-        self.info_frame.update_input_info(
-            str(path), format_size(self.source_file_size), self.source_image.size
-        )
+        self._geometry_key = None
+        source_size = proxy.source_size
+        self.settings_frame.set_input_image_size(source_size)
+        self.info_frame.update_input_info(str(path), format_size(file_size), source_size)
+        self.preview_frame.set_input_image(displayable(proxy.image), source_size)
 
     def load_input_file(self, file_path):
         try:
@@ -273,7 +289,7 @@ class TIFFtoPNGConverter:
             return
         self._loaded_input = str(file_path)
         self.logger.info(
-            f"Loaded image: {self.source_image.width}x{self.source_image.height}, "
+            f"Loaded image: {self.proxy.source_size[0]}x{self.proxy.source_size[1]}, "
             f"{format_size(self.source_file_size)}"
         )
         self.autofill_output_path(file_path)
@@ -301,7 +317,7 @@ class TIFFtoPNGConverter:
             self._set_source(tiff_files[0])
         except LOAD_ERRORS as error:
             self.logger.error(f"Failed to read {tiff_files[0].name}: {error}")
-            self.source_image = None
+            self.proxy = None
         self.refresh_outputs(show_input=False)
 
     def _effective_box(self, settings):
@@ -312,7 +328,7 @@ class TIFFtoPNGConverter:
     def _input_overlay(self, settings):
         if settings.fit is not Fit.FILL or settings.target is None:
             return None
-        size = self.source_image.size
+        size = self.proxy.source_size
         if self.crop_box is None:
             box = default_fill_box(size, settings.target, settings.scale)
         else:
@@ -321,7 +337,7 @@ class TIFFtoPNGConverter:
 
     def refresh_outputs(self, show_input=True):
         """Render the cached source with the current settings into the previews and info."""
-        if self.source_image is None:
+        if self.proxy is None:
             return
         settings = self.current_settings()
         if settings is None:
@@ -331,17 +347,19 @@ class TIFFtoPNGConverter:
             self._geometry_key = key
             self.crop_box = None
         try:
-            geometry = compute_geometry(self.source_image.size, settings, self._effective_box(settings))
-            output = render(self.source_image, geometry, settings)
+            proxy = self.proxy
+            geometry = compute_geometry(proxy.source_size, settings, self._effective_box(settings))
+            shown = preview_geometry(geometry, proxy.image.size, proxy.factor, PROXY_MAX_SIDE)
+            output = render(proxy.image, shown, settings)
             estimated = estimate_png_size(output, geometry.out_size, settings)
         except (ValueError, OSError) as error:
             self.logger.error(f"Error updating preview: {error}")
             self.preview_frame.update_output_preview(None)
             return
         if show_input:
-            self.preview_frame.update_input_preview(
-                displayable(self.source_image), self._input_overlay(settings)
-            )
+            overlay = self._input_overlay(settings)
+            aspect = settings.target[0] / settings.target[1] if overlay else None
+            self.preview_frame.set_crop_overlay(overlay, aspect)
         self.preview_frame.update_output_preview(displayable(output))
         out_w, out_h = geometry.out_size
         self.info_frame.update_output_info(
@@ -372,9 +390,9 @@ class TIFFtoPNGConverter:
         if settings is None:
             messagebox.showerror("Invalid settings", self.settings_error)
             return
-        if self.source_image is None or self._loaded_input != input_path:
+        if self.proxy is None or self._loaded_input != input_path:
             self.load_input_file(input_path)
-            if self.source_image is None or self._loaded_input != input_path:
+            if self.proxy is None or self._loaded_input != input_path:
                 return
 
         job = Job(Path(input_path), 0, Path(output_path))
@@ -387,7 +405,7 @@ class TIFFtoPNGConverter:
         report = run_jobs(
             [job], settings,
             crop_box=self._effective_box(settings),
-            crop_source_size=self.source_image.size,
+            crop_source_size=self.proxy.source_size,
         )
         if report.failed:
             message = report.failed[0].message

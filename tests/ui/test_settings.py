@@ -145,24 +145,24 @@ def test_loading_requires_a_file_and_does_not_create_dirs(app, tiff, tmp_path, d
     path = tiff("rgb")
     app.input_path_var.set(str(tmp_path))
     app.apply_paths()
-    assert app.source_image is None
+    assert app.proxy is None
     assert "showerror" not in dialogs
 
     app.input_path_var.set(str(path))
     app.apply_paths()
-    assert app.source_image is not None
+    assert app.proxy is not None
     assert app.output_path_var.get().endswith("rgb.png")
     assert not (path.parent / "PNG_Output").exists()
 
 
 def test_typing_loads_only_after_debounce(app, tiff):
     app.input_path_var.set(str(tiff("rgb")))
-    assert app.source_image is None
+    assert app.proxy is None
     deadline = time.monotonic() + 5
-    while app.source_image is None and time.monotonic() < deadline:
+    while app.proxy is None and time.monotonic() < deadline:
         app.root.update()
         time.sleep(0.02)
-    assert app.source_image is not None
+    assert app.proxy is not None
 
 
 def test_convert_single_file_matches_core_output(app, tiff, tmp_path, dialogs):

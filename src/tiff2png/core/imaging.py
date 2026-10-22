@@ -11,6 +11,7 @@ from PIL import Image, ImageCms, ImageOps
 from tiff2png.core.geometry import Geometry
 from tiff2png.core.settings import ColourMode, ConvertSettings, Dither, Pages, Resample
 
+PROXY_MAX_SIDE = 1024
 KEEP_MODES = frozenset({"1", "L", "LA", "P", "RGB", "RGBA", "I;16"})
 SIXTEEN_BIT_MODES = frozenset({"I;16", "I;16B", "I;16L", "I;16N"})
 GRAY_PROFILE_MODES = frozenset({"1", "L", "LA", "I;16"})
@@ -40,6 +41,27 @@ def load_pages(
             oriented = ImageOps.exif_transpose(source)
             image, icc_profile = normalise(oriented, icc_profile)
             yield index, image, PageMeta(icc_profile=icc_profile, dpi=dpi)
+
+
+@dataclass(frozen=True)
+class Proxy:
+    """A normalised page downscaled for previews; factor is proxy pixels per source pixel."""
+
+    image: Image.Image
+    source_size: tuple[int, int]
+    factor: float
+
+
+def make_proxy(image: Image.Image, max_side: int = PROXY_MAX_SIDE) -> Proxy:
+    source_size = image.size
+    long_side = max(source_size)
+    if long_side <= max_side:
+        return Proxy(image, source_size, 1.0)
+    shrink = max_side / long_side
+    size = (max(1, round(image.width * shrink)), max(1, round(image.height * shrink)))
+    prepared = _prepare_for_resize(image, Resample.LANCZOS)
+    resized = prepared.resize(size, Resample.LANCZOS.value)
+    return Proxy(resized, source_size, max(size) / long_side)
 
 
 def _read_dpi(source: Image.Image) -> tuple[float, float] | None:

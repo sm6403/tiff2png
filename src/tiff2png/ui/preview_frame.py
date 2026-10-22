@@ -1,281 +1,219 @@
 import tkinter as tk
 from tkinter import ttk
-from PIL import Image, ImageTk, ImageDraw
+
+from PIL import Image, ImageTk
+
+from tiff2png.core.geometry import Box, clamp_box
+
+DISPLAY_MAX = 400
+HANDLE_PX = 8
+MIN_BOX_PX = 12
+KEY_STEP_PX = 5
+SHIFT_MASK = 0x1
+CORNERS = {"nw": (-1, -1), "ne": (1, -1), "sw": (-1, 1), "se": (1, 1)}
+ARROWS = {"Left": (-1, 0), "Right": (1, 0), "Up": (0, -1), "Down": (0, 1)}
+
 
 class PreviewFrame(ttk.Frame):
     def __init__(self, parent, on_crop_update=None, *args, **kwargs):
         super().__init__(parent, *args, **kwargs)
-        self.parent = parent
         self.on_crop_update = on_crop_update
-        self.crop_box = None  # (left, top, right, bottom) in original image coordinates
-        self.dragging = False
-        self.drag_offset = (0, 0)
-        self.image_size = None
-        self.last_image = None
-        self.preview_image = None  # Store the base preview image without crop box
-        self.resize_handle = None  # Current handle being dragged (None, 'nw', 'ne', 'sw', 'se')
-        self.handle_size = 8  # Size of resize handles in pixels
-        self.move_step = 5  # Pixels to move with arrow keys
-        
-        # Configure grid for vertical stacking
+        self.crop_box = None
+        self.aspect = None
+        self.source_size = None
+        self.display_scale = 1.0
+        self._drag = None
+        self.input_photo = None
+        self.output_photo = None
+
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(0, weight=0)
         self.grid_rowconfigure(1, weight=1)
         self.grid_rowconfigure(2, weight=0)
         self.grid_rowconfigure(3, weight=1)
-        
-        # Input preview label
-        self.input_label = ttk.Label(self, text="Input Preview")
-        self.input_label.grid(row=0, column=0, pady=(5, 0))
-        
-        # Input preview image
-        self.input_preview_label = ttk.Label(self, text="No image selected")
-        self.input_preview_label.grid(row=1, column=0, padx=5, pady=5, sticky=(tk.W, tk.E, tk.N, tk.S))
-        
-        # Output preview label
-        self.output_label = ttk.Label(self, text="Output Preview")
-        self.output_label.grid(row=2, column=0, pady=(10, 0))
-        
-        # Output preview image
+
+        ttk.Label(self, text="Input Preview").grid(row=0, column=0, pady=(5, 0))
+
+        self.input_text = ttk.Label(self, text="No image selected")
+        self.input_text.grid(row=1, column=0, padx=5, pady=5)
+        self.canvas = tk.Canvas(self, width=1, height=1, highlightthickness=0, borderwidth=0)
+        self.canvas.bind("<Button-1>", self._on_mouse_down)
+        self.canvas.bind("<B1-Motion>", self._on_mouse_drag)
+        self.canvas.bind("<ButtonRelease-1>", self._on_mouse_up)
+        self.canvas.bind("<Key>", self._on_key_press)
+
+        ttk.Label(self, text="Output Preview").grid(row=2, column=0, pady=(10, 0))
         self.output_preview_label = ttk.Label(self, text="No output yet")
         self.output_preview_label.grid(row=3, column=0, padx=5, pady=5, sticky=(tk.W, tk.E, tk.N, tk.S))
-        
-        # Store PhotoImage objects
-        self.input_photo = None
-        self.output_photo = None
-        
-        # Mouse event bindings for crop box
-        self.input_preview_label.bind('<Button-1>', self._on_mouse_down)
-        self.input_preview_label.bind('<B1-Motion>', self._on_mouse_drag)
-        self.input_preview_label.bind('<ButtonRelease-1>', self._on_mouse_up)
-        
-        # Keyboard bindings for fine control
-        self.input_preview_label.bind('<Key>', self._on_key_press)
-        self.input_preview_label.focus_set()  # Enable keyboard focus
 
-    def _get_handle_at(self, x, y):
-        """Return which resize handle is at the given coordinates, or None"""
-        if not self.crop_box:
-            return None
-            
-        # Convert to preview coordinates
-        px = int(x / self._preview_scale)
-        py = int(y / self._preview_scale)
-        l, t, r, b = self.crop_box
-        
-        # Check each corner
-        if abs(px - l) <= self.handle_size and abs(py - t) <= self.handle_size:
-            return 'nw'
-        if abs(px - r) <= self.handle_size and abs(py - t) <= self.handle_size:
-            return 'ne'
-        if abs(px - l) <= self.handle_size and abs(py - b) <= self.handle_size:
-            return 'sw'
-        if abs(px - r) <= self.handle_size and abs(py - b) <= self.handle_size:
-            return 'se'
+    def set_input_image(self, image, source_size):
+        """Show a proxy of the source and reset the crop overlay."""
+        self.source_size = source_size
+        fit = min(DISPLAY_MAX / image.width, DISPLAY_MAX / image.height)
+        shown = (max(1, round(image.width * fit)), max(1, round(image.height * fit)))
+        self.display_scale = shown[0] / source_size[0]
+        self.input_photo = ImageTk.PhotoImage(image.resize(shown, Image.Resampling.LANCZOS))
+        self.canvas.delete("all")
+        self.canvas.configure(width=shown[0], height=shown[1])
+        self.canvas.create_image(0, 0, anchor=tk.NW, image=self.input_photo, tags="photo")
+        for index in range(4):
+            self.canvas.create_rectangle(0, 0, 0, 0, fill="black", stipple="gray50",
+                                         outline="", tags=("crop", f"shade{index}"))
+        self.canvas.create_rectangle(0, 0, 0, 0, outline="red", width=2, tags=("crop", "box"))
+        for corner in CORNERS:
+            self.canvas.create_rectangle(0, 0, 0, 0, fill="white", outline="red",
+                                         tags=("crop", f"handle_{corner}"))
+        self.input_text.grid_remove()
+        self.canvas.grid(row=1, column=0, padx=5, pady=5)
+        self.crop_box = None
+        self._drag = None
+        self._draw_box()
+
+    def clear_input(self):
+        self.source_size = None
+        self.crop_box = None
+        self.aspect = None
+        self._drag = None
+        self.input_photo = None
+        self.canvas.delete("all")
+        self.canvas.grid_remove()
+        self.input_text.grid()
+
+    def set_crop_overlay(self, box, aspect):
+        """Show box (source coordinates) or hide the overlay when box is None."""
+        self.crop_box = None if box is None else Box(*box)
+        self.aspect = aspect
+        self._drag = None
+        self._draw_box()
+
+    def to_display(self, box):
+        return box.scaled(self.display_scale).as_tuple()
+
+    def _draw_box(self):
+        if self.crop_box is None or self.source_size is None:
+            self.canvas.itemconfigure("crop", state="hidden")
+            return
+        self.canvas.itemconfigure("crop", state="normal")
+        left, top, right, bottom = self.to_display(self.crop_box)
+        width = self.source_size[0] * self.display_scale
+        height = self.source_size[1] * self.display_scale
+        shades = [(0, 0, width, top), (0, bottom, width, height),
+                  (0, top, left, bottom), (right, top, width, bottom)]
+        for index, rect in enumerate(shades):
+            self.canvas.coords(f"shade{index}", *rect)
+        self.canvas.coords("box", left, top, right, bottom)
+        half = HANDLE_PX / 2
+        for name, (x, y) in self._display_corners().items():
+            self.canvas.coords(f"handle_{name}", x - half, y - half, x + half, y + half)
+
+    def _display_corners(self):
+        left, top, right, bottom = self.to_display(self.crop_box)
+        return {"nw": (left, top), "ne": (right, top), "sw": (left, bottom), "se": (right, bottom)}
+
+    def _active(self):
+        return self.crop_box is not None and self.source_size is not None and bool(self.aspect)
+
+    def _to_source(self, event):
+        return event.x / self.display_scale, event.y / self.display_scale
+
+    def _handle_at(self, event):
+        for name, (x, y) in self._display_corners().items():
+            if abs(event.x - x) <= HANDLE_PX and abs(event.y - y) <= HANDLE_PX:
+                return name
         return None
 
     def _on_mouse_down(self, event):
-        if not self.crop_box or not self.image_size:
+        self.canvas.focus_set()
+        if not self._active():
             return
-            
-        # Get the label's position relative to the window
-        label_x = self.input_preview_label.winfo_x()
-        label_y = self.input_preview_label.winfo_y()
-        
-        # Adjust event coordinates relative to the label
-        x = event.x - label_x
-        y = event.y - label_y
-        
-        # Convert to image coordinates
-        x = int(x / self._preview_scale)
-        y = int(y / self._preview_scale)
-        l, t, r, b = self.crop_box
-        
-        # Check for resize handles first
-        self.resize_handle = self._get_handle_at(event.x - label_x, event.y - label_y)
-        if self.resize_handle:
-            self.dragging = True
+        handle = self._handle_at(event)
+        if handle is not None:
+            self._drag = ("resize", handle)
             return
-            
-        # Check if inside crop box
-        if l <= x <= r and t <= y <= b:
-            self.dragging = True
-            self.drag_offset = (x - l, y - t)
+        x, y = self._to_source(event)
+        box = self.crop_box
+        if box.left <= x <= box.right and box.top <= y <= box.bottom:
+            self._drag = ("move", (x - box.left, y - box.top))
 
     def _on_mouse_drag(self, event):
-        if not self.dragging or not self.crop_box or not self.image_size:
+        if self._drag is None or not self._active():
             return
-            
-        # Get the label's position relative to the window
-        label_x = self.input_preview_label.winfo_x()
-        label_y = self.input_preview_label.winfo_y()
-        
-        # Adjust event coordinates relative to the label
-        x = event.x - label_x
-        y = event.y - label_y
-        
-        img_w, img_h = self.image_size
-        x = int(x / self._preview_scale)
-        y = int(y / self._preview_scale)
-        
-        if self.resize_handle:
-            # Handle resizing
-            l, t, r, b = self.crop_box
-            if 'n' in self.resize_handle:
-                t = max(0, min(y, b - 10))
-            if 's' in self.resize_handle:
-                b = min(img_h, max(y, t + 10))
-            if 'w' in self.resize_handle:
-                l = max(0, min(x, r - 10))
-            if 'e' in self.resize_handle:
-                r = min(img_w, max(x, l + 10))
-            self.crop_box = (l, t, r, b)
+        x, y = self._to_source(event)
+        kind, detail = self._drag
+        if kind == "move":
+            self.crop_box = self._moved_to(x - detail[0], y - detail[1])
         else:
-            # Handle moving
-            box_w = self.crop_box[2] - self.crop_box[0]
-            box_h = self.crop_box[3] - self.crop_box[1]
-            new_l = max(0, min(x - self.drag_offset[0], img_w - box_w))
-            new_t = max(0, min(y - self.drag_offset[1], img_h - box_h))
-            new_r = new_l + box_w
-            new_b = new_t + box_h
-            self.crop_box = (new_l, new_t, new_r, new_b)
-            
-        # Update the crop box overlay
-        self._draw_crop_box()
+            self.crop_box = self._resized_to(detail, x, y)
+        self._draw_box()
 
     def _on_mouse_up(self, event):
-        if self.dragging:
-            self.dragging = False
-            self.resize_handle = None
-            # Now that drag is complete, update the output preview
-            if self.on_crop_update:
-                self.on_crop_update(self.crop_box)
+        if self._drag is None:
+            return
+        self._drag = None
+        self._notify()
+
+    def _moved_to(self, left, top):
+        width, height = self.crop_box.width, self.crop_box.height
+        src_w, src_h = self.source_size
+        left = max(0.0, min(left, src_w - width))
+        top = max(0.0, min(top, src_h - height))
+        return Box(left, top, left + width, top + height)
+
+    def _resized_to(self, handle, x, y):
+        sign_x, sign_y = CORNERS[handle]
+        box = self.crop_box
+        anchor_x = box.right if sign_x < 0 else box.left
+        anchor_y = box.bottom if sign_y < 0 else box.top
+        src_w, src_h = self.source_size
+        room_x = anchor_x if sign_x < 0 else src_w - anchor_x
+        room_y = anchor_y if sign_y < 0 else src_h - anchor_y
+        wanted_w = (x - anchor_x) * sign_x
+        wanted_h = (y - anchor_y) * sign_y
+        min_w = MIN_BOX_PX / self.display_scale
+        width = max(min_w, min(wanted_w, wanted_h * self.aspect))
+        width = min(width, room_x, room_y * self.aspect)
+        height = width / self.aspect
+        other_x = anchor_x + sign_x * width
+        other_y = anchor_y + sign_y * height
+        return Box(min(anchor_x, other_x), min(anchor_y, other_y),
+                   max(anchor_x, other_x), max(anchor_y, other_y))
 
     def _on_key_press(self, event):
-        """Handle keyboard controls for fine-tuning crop box position"""
-        if not self.crop_box or not self.image_size:
+        if not self._active() or event.keysym not in ARROWS:
             return
-            
-        img_w, img_h = self.image_size
-        l, t, r, b = self.crop_box
-        box_w = r - l
-        box_h = b - t
-        
-        # Calculate movement step in original image coordinates
-        step = int(self.move_step / self._preview_scale)
-        
-        if event.keysym == 'Up':
-            new_t = max(0, t - step)
-            new_b = new_t + box_h
-            self.crop_box = (l, new_t, r, new_b)
-        elif event.keysym == 'Down':
-            new_b = min(img_h, b + step)
-            new_t = new_b - box_h
-            self.crop_box = (l, new_t, r, new_b)
-        elif event.keysym == 'Left':
-            new_l = max(0, l - step)
-            new_r = new_l + box_w
-            self.crop_box = (new_l, t, new_r, b)
-        elif event.keysym == 'Right':
-            new_r = min(img_w, r + step)
-            new_l = new_r - box_w
-            self.crop_box = (new_l, t, new_r, b)
-            
-        self._draw_crop_box()
+        step = max(1.0, KEY_STEP_PX / self.display_scale)
+        step_x, step_y = ARROWS[event.keysym]
+        box = self.crop_box
+        if event.state & SHIFT_MASK:
+            grow = step * (step_x - step_y)
+            width = max(MIN_BOX_PX / self.display_scale, box.width + 2 * grow)
+            height = width / self.aspect
+            centre_x = (box.left + box.right) / 2
+            centre_y = (box.top + box.bottom) / 2
+            wanted = Box(centre_x - width / 2, centre_y - height / 2,
+                         centre_x + width / 2, centre_y + height / 2)
+            self.crop_box = clamp_box(wanted, self.source_size, self.aspect)
+        else:
+            self.crop_box = self._moved_to(box.left + step_x * step, box.top + step_y * step)
+        self._draw_box()
+        self._notify()
+
+    def _notify(self):
         if self.on_crop_update:
-            self.on_crop_update(self.crop_box)
-
-    def _draw_crop_box(self):
-        """Draw the crop box overlay on the preview image"""
-        if not self.preview_image or not self.crop_box:
-            return
-            
-        # Create a copy of the preview image for drawing
-        preview_copy = self.preview_image.copy()
-        from PIL import ImageDraw
-        draw = ImageDraw.Draw(preview_copy)
-        
-        # Scale crop box coordinates to preview size
-        left, top, right, bottom = self.crop_box
-        left = int(left * self._preview_scale)
-        top = int(top * self._preview_scale)
-        right = int(right * self._preview_scale)
-        bottom = int(bottom * self._preview_scale)
-        
-        # Draw semi-transparent overlay
-        overlay = Image.new('RGBA', preview_copy.size, (0, 0, 0, 128))
-        draw_overlay = ImageDraw.Draw(overlay)
-        draw_overlay.rectangle([0, 0, preview_copy.size[0], preview_copy.size[1]], fill=(0, 0, 0, 128))
-        draw_overlay.rectangle([left, top, right, bottom], fill=(0, 0, 0, 0))
-        preview_copy = Image.alpha_composite(preview_copy.convert('RGBA'), overlay)
-        
-        # Draw the crop box
-        draw = ImageDraw.Draw(preview_copy)
-        draw.rectangle([left, top, right, bottom], outline='red', width=2)
-        
-        # Draw resize handles
-        handle_color = 'white'
-        handle_outline = 'red'
-        handle_size = int(self.handle_size * self._preview_scale)
-        
-        # Draw handles at corners
-        for x, y in [(left, top), (right, top), (left, bottom), (right, bottom)]:
-            draw.rectangle(
-                [x - handle_size//2, y - handle_size//2,
-                 x + handle_size//2, y + handle_size//2],
-                fill=handle_color, outline=handle_outline
-            )
-        
-        # Update the preview
-        photo = ImageTk.PhotoImage(preview_copy)
-        self.input_preview_label.configure(image=photo, text="")
-        self.input_photo = photo
-
-    def update_input_preview(self, image, crop_box=None):
-        """Update the input preview with a new image and optional crop box overlay"""
-        try:
-            self.last_image = image
-            if image:
-                self.image_size = image.size
-                # Create and store the base preview image
-                self.preview_image = self.resize_image(image)
-                self._preview_scale = min(400 / image.size[0], 400 / image.size[1])
-                
-                # Draw crop box if provided
-                if crop_box:
-                    self.crop_box = crop_box
-                    self._draw_crop_box()
-                else:
-                    self.crop_box = None
-                    photo = ImageTk.PhotoImage(self.preview_image)
-                    self.input_preview_label.configure(image=photo, text="")
-                    self.input_photo = photo
-            else:
-                self.input_preview_label.configure(image=None, text="No image selected")
-                self.input_photo = None
-                self.preview_image = None
-        except (ValueError, OSError, tk.TclError) as e:
-            self.input_preview_label.configure(image=None, text=f"Error loading preview: {str(e)}")
-            self.input_photo = None
-            self.preview_image = None
+            self.on_crop_update(self.crop_box.as_tuple())
 
     def update_output_preview(self, image):
-        """Update the output preview with a new image"""
+        """Update the output preview with a new image."""
         try:
             if image:
-                preview_img = self.resize_image(image)
-                photo = ImageTk.PhotoImage(preview_img)
+                fit = min(DISPLAY_MAX / image.width, DISPLAY_MAX / image.height)
+                size = (max(1, round(image.width * fit)), max(1, round(image.height * fit)))
+                photo = ImageTk.PhotoImage(image.resize(size, Image.Resampling.LANCZOS))
                 self.output_preview_label.configure(image=photo, text="")
                 self.output_photo = photo
             else:
-                self.output_preview_label.configure(image=None, text="No output yet")
+                self.output_preview_label.configure(image="", text="No output yet")
                 self.output_photo = None
-        except (ValueError, OSError, tk.TclError) as e:
-            self.output_preview_label.configure(image=None, text=f"Error loading preview: {str(e)}")
+        except (ValueError, OSError, tk.TclError) as error:
+            self.output_preview_label.configure(image="", text=f"Error loading preview: {error}")
             self.output_photo = None
-
-    def resize_image(self, image, max_size=(400, 400)):
-        """Resize image maintaining aspect ratio"""
-        ratio = min(max_size[0]/image.size[0], max_size[1]/image.size[1])
-        new_size = tuple(int(dim * ratio) for dim in image.size)
-        return image.resize(new_size, Image.Resampling.LANCZOS) 

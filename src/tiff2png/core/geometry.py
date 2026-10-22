@@ -120,5 +120,26 @@ def compute_geometry(
     return Geometry(box, (target_w, target_h))
 
 
+def preview_geometry(
+    geometry: Geometry,
+    proxy_size: tuple[int, int],
+    factor: float,
+    max_out_side: int,
+) -> Geometry:
+    """Map a source-space geometry onto a proxy that is `factor` times the source size.
+
+    The output size is shrunk, never grown, so its long side is at most max_out_side.
+    """
+    proxy_w, proxy_h = proxy_size
+    box = geometry.box.scaled(factor)
+    left = min(max(0.0, box.left), proxy_w - 1.0)
+    top = min(max(0.0, box.top), proxy_h - 1.0)
+    right = min(float(proxy_w), max(box.right, left + 1.0))
+    bottom = min(float(proxy_h), max(box.bottom, top + 1.0))
+    out_w, out_h = geometry.out_size
+    shrink = min(1.0, max_out_side / max(out_w, out_h))
+    return Geometry(Box(left, top, right, bottom), _round_size(out_w * shrink, out_h * shrink))
+
+
 def _round_size(width: float, height: float) -> tuple[int, int]:
     return max(1, round(width)), max(1, round(height))
