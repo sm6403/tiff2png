@@ -113,7 +113,7 @@ class BatchPreviewFrame(ttk.Frame):
                     self.preview_images.append(photo)  # Keep reference
                     preview_label.configure(image=photo)
                     canvas.coords(canvas.create_window(x, y, anchor=tk.NW, window=preview_label), x, y)
-            except Exception as e:
+            except (OSError, ValueError) as e:
                 preview_label.configure(text=f"Error loading preview:\n{str(e)}")
 
     def prev_page(self):

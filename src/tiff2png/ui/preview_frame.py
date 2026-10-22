@@ -254,7 +254,7 @@ class PreviewFrame(ttk.Frame):
                 self.input_preview_label.configure(image=None, text="No image selected")
                 self.input_photo = None
                 self.preview_image = None
-        except Exception as e:
+        except (ValueError, OSError, tk.TclError) as e:
             self.input_preview_label.configure(image=None, text=f"Error loading preview: {str(e)}")
             self.input_photo = None
             self.preview_image = None
@@ -270,7 +270,7 @@ class PreviewFrame(ttk.Frame):
             else:
                 self.output_preview_label.configure(image=None, text="No output yet")
                 self.output_photo = None
-        except Exception as e:
+        except (ValueError, OSError, tk.TclError) as e:
             self.output_preview_label.configure(image=None, text=f"Error loading preview: {str(e)}")
             self.output_photo = None
 

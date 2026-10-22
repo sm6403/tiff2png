@@ -27,4 +27,7 @@ where = ["src"]
 "tiff2png.ui" = ["assets/*.ico"]
 
 [tool.pytest.ini_options]
+# fd-level capture intermittently breaks Tk initialisation on Windows
 testpaths = ["tests"]
+addopts = "--import-mode=importlib --capture=sys"
+pythonpath = ["tests"]
