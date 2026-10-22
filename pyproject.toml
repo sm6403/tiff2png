@@ -14,6 +14,9 @@ dependencies = ["Pillow>=11", "sv-ttk>=2.6"]
 dev = ["pytest"]
 build = ["pyinstaller"]
 
+[project.scripts]
+tiff2png = "tiff2png.cli:main"
+
 [project.gui-scripts]
 tiff2png-gui = "tiff2png.ui.app:main"
 
