@@ -1,82 +1,92 @@
 # TIFF to PNG Converter
 
-A Python application for converting TIFF images to PNG format with advanced options for image processing and optimization.
+Convert TIFF images to PNG from a Tkinter GUI or a headless command line, sharing one conversion core.
 
 ## Features
 
-- Single file and batch conversion modes
-- Resolution scaling and standard resolution presets
-- Fill mode for exact resolution matching
-- PNG optimization options
-- Advanced color and compression settings
-- Real-time file size estimation
-- Image preview with crop visualization
-- Progress tracking for batch conversion
-- Customizable output naming for batch processing
+- Single-file and batch modes, with batch thumbnails and select/deselect
+- Fit within or Fill (crop) to a target size, with a draggable, aspect-locked crop box
+  (arrow keys move it, Shift+arrows resize it)
+- Standard resolutions plus manual width and height, and percentage scaling
+- Resampling filter: nearest, box, bilinear, hamming, bicubic, lanczos
+- Colour mode (auto, RGB, RGBA, grey, palette) and Floyd-Steinberg dithering for palette output
+- PNG optimize and compression level
+- Live preview from a downscaled proxy and a PNG size estimate
+- Batch conversion on a background thread with Cancel and a per-file failure summary
+- Output naming as Root_NN or the original filename, with an overwrite prompt
+  (Yes all / No skip existing / Cancel)
+- Export every page of a multi-page TIFF as separate PNGs
+- Handles CMYK (ICC managed), 16-bit, float and LAB TIFFs and EXIF orientation;
+  ICC profile and DPI are preserved
+- Logs tab and the sv-ttk theme
 
 ## Requirements
 
-- Python 3.6 or higher
-- Pillow library
+Python 3.12 or newer. Runtime dependencies are Pillow and sv-ttk.
 
-## Installation
+## Install
 
-1. Clone or download this repository
-2. Install the required dependencies:
-   ```
-   pip install -r requirements.txt
-   ```
+```
+py -3.12 -m venv .venv
+.venv\Scripts\python -m pip install -e ".[dev]"
+```
 
-## Usage
+This also installs the `tiff2png` (CLI) and `tiff2png-gui` commands.
 
-1. Run the application:
-   ```
-   python src/main.py
-   ```
+## Run
 
-2. Choose conversion mode:
-   - Single File: Convert one TIFF file at a time
-   - Batch Convert: Convert all TIFF files in a folder
+GUI:
 
-3. Select input file/folder and output location
+```
+python -m tiff2png
+```
 
-4. Configure conversion settings:
-   - Basic settings:
-     - Resolution scale (10-100%)
-     - Standard resolution presets
-     - Fill mode for exact resolution matching
-     - PNG optimization
-   - Advanced settings:
-     - Color mode
-     - Dithering method
-     - Filter method
-     - Chunk optimization
-     - Interlacing
+CLI (any arguments select the CLI):
 
-5. Click "Convert" to start the conversion process
+```
+tiff2png INPUT... [-o OUT] [--scale PCT] [--fit WxH | --fill WxH] [--crop L,T,R,B]
+         [--resample nearest|box|bilinear|hamming|bicubic|lanczos]
+         [--colour auto|rgb|rgba|l|p] [--dither none|fs]
+         [--no-optimize] [--compress-level N] [--all-pages]
+         [--naming root|original] [--root NAME] [--overwrite]
+```
 
-## File Information
+INPUT is any mix of TIFF files and folders. `-o` defaults to the first input's folder.
+`--root` defaults to `Batch`. `--crop` applies to every page, clamped per page.
 
-The application displays the following information for each file:
-- Input file size and resolution
-- Estimated output size
-- Compression ratio
+Exit codes: 0 all converted, 1 some failed, 2 usage or plan error (including name collisions
+and existing outputs without `--overwrite`).
 
-## Batch Processing
+Example:
 
-For batch conversion:
-1. Select an input folder containing TIFF files
-2. Choose an output folder
-3. Set a root name for the output files (e.g., "Batch_01" will create files like "Batch_01_01.png")
-4. Configure conversion settings
-5. Click "Convert" to process all files
+```
+tiff2png scans\ -o out --fill 1920x1080 --resample lanczos --all-pages
+```
 
-## Error Handling
+## Tests
 
-- The application provides detailed error messages for failed conversions
-- Batch processing continues even if individual files fail
-- A summary of successful and failed conversions is shown at the end
+```
+python -m pytest
+```
+
+## Build the exe
+
+```
+powershell -NoProfile -ExecutionPolicy Bypass -File build.ps1
+```
+
+This creates or reuses `.venv`, installs `.[dev,build]` (PyInstaller goes only into that venv), runs
+the tests, cleans `build\` and `dist\`, and produces `dist\tiff2png.exe`. It stops on the first
+failing step. `build\` and `dist\` are not committed; uploading a release is manual.
+
+The exe is windowed: with no arguments it opens the GUI; with arguments it runs the CLI and writes
+to the console it was launched from. A hidden smoke test converts a generated image without showing
+a window:
+
+```
+dist\tiff2png.exe --self-test out.png
+```
 
 ## License
 
-This project is licensed under the MIT License - see the LICENSE file for details. 
+MIT License, see the LICENSE file.

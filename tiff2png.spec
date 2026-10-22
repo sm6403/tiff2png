@@ -1,11 +1,10 @@
 # -*- mode: python ; coding: utf-8 -*-
 
-
 a = Analysis(
-    ['src\\main.py'],
-    pathex=[],
+    ['src/tiff2png/__main__.py'],
+    pathex=['src'],
     binaries=[],
-    datas=[('src/ui/T2P.ico', 'ui')],
+    datas=[('src/tiff2png/ui/assets/T2P.ico', 'tiff2png/ui/assets')],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},
@@ -22,11 +21,11 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name='main',
+    name='tiff2png',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=True,
+    upx=False,
     upx_exclude=[],
     runtime_tmpdir=None,
     console=False,
@@ -35,5 +34,5 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=['src\\ui\\T2P.ico'],
+    icon=['src/tiff2png/ui/assets/T2P.ico'],
 )
