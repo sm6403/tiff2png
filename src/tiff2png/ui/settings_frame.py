@@ -2,8 +2,9 @@ import tkinter as tk
 from tkinter import ttk
 import logging
 from datetime import date
-import sys
-import os
+from importlib import resources
+
+from PIL import Image, ImageTk
 
 class SettingsFrame(ttk.Frame):
     def __init__(self, parent, on_settings_change=None, *args, **kwargs):
@@ -317,16 +318,10 @@ class SettingsFrame(ttk.Frame):
 
     def init_about_tab(self):
         """Initialize the About tab with app info, icon, and version/date"""
-        def resource_path(relative_path):
-            try:
-                base_path = sys._MEIPASS
-            except AttributeError:
-                base_path = os.path.abspath(".")
-            return os.path.join(base_path, relative_path)
         try:
-            from PIL import Image, ImageTk
-            icon_img = Image.open(resource_path("ui/T2P.ico"))
-            icon_img = icon_img.resize((64, 64), Image.LANCZOS)
+            with resources.files("tiff2png.ui").joinpath("assets", "T2P.ico").open("rb") as icon_file:
+                icon_img = Image.open(icon_file)
+                icon_img = icon_img.resize((64, 64), Image.LANCZOS)
             self.about_icon = ImageTk.PhotoImage(icon_img)
             icon_label = ttk.Label(self.about_tab, image=self.about_icon)
             icon_label.grid(row=0, column=0, pady=(10, 5), padx=10)

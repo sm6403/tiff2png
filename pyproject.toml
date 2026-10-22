@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tiff2png"
+version = "0.2.0"
+description = "Convert TIFF images to PNG"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = ["Pillow>=11", "sv-ttk>=2.6"]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+build = ["pyinstaller"]
+
+[project.gui-scripts]
+tiff2png-gui = "tiff2png.ui.app:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+"tiff2png.ui" = ["assets/*.ico"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

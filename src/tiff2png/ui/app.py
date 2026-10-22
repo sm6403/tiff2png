@@ -5,25 +5,20 @@ import os
 from PIL import Image
 import math
 import logging
-import sys
+from importlib import resources
 
-from ui.preview_frame import PreviewFrame
-from ui.batch_preview_frame import BatchPreviewFrame
-from ui.settings_frame import SettingsFrame
-from ui.info_frame import InfoFrame
-from core.image_processor import ImageProcessor
+from tiff2png.ui.preview_frame import PreviewFrame
+from tiff2png.ui.batch_preview_frame import BatchPreviewFrame
+from tiff2png.ui.settings_frame import SettingsFrame
+from tiff2png.ui.info_frame import InfoFrame
+from tiff2png.core.legacy import ImageProcessor
 
 class TIFFtoPNGConverter:
     def __init__(self):
         self.root = tk.Tk()
         self.root.title("TIFF to PNG Converter")
-        def resource_path(relative_path):
-            try:
-                base_path = sys._MEIPASS
-            except AttributeError:
-                base_path = os.path.abspath(".")
-            return os.path.join(base_path, relative_path)
-        self.root.iconbitmap(resource_path("ui/T2P.ico"))
+        with resources.as_file(resources.files("tiff2png.ui") / "assets" / "T2P.ico") as icon_path:
+            self.root.iconbitmap(str(icon_path))
         
         # Configure root window
         self.root.grid_rowconfigure(0, weight=1)
@@ -627,6 +622,10 @@ class TIFFtoPNGConverter:
         """Start the application"""
         self.root.mainloop()
 
-if __name__ == "__main__":
+def main():
     app = TIFFtoPNGConverter()
-    app.run() 
+    app.run()
+
+
+if __name__ == "__main__":
+    main() 
